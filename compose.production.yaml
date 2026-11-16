@@ -1,0 +1,91 @@
+name: uranium-production
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-api: &api
+  image: uranium-api:${RELEASE_TAG:?Set RELEASE_TAG}
+  build: ./backend
+  environment:
+    DB_HOST: db
+    POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+  security_opt: [no-new-privileges:true]
+  cap_drop: [ALL]
+  read_only: true
+  tmpfs: [/tmp]
+  logging: *logging
+
+services:
+  db:
+    image: postgres:18
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: dashboard
+      POSTGRES_DB: uranium
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+      API_DB_PASSWORD: ${API_DB_PASSWORD:?Set a separate API_DB_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql
+      - ./deploy/init-reader.sh:/docker-entrypoint-initdb.d/init-reader.sh:ro
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -h 127.0.0.1 -U dashboard -d uranium"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    logging: *logging
+  migrate:
+    <<: *api
+    command: [alembic, upgrade, head]
+    depends_on:
+      db:
+        condition: service_healthy
+  api:
+    <<: *api
+    environment:
+      DB_HOST: db
+      DB_USER: uranium_reader
+      POSTGRES_PASSWORD: ${API_DB_PASSWORD:?Set a separate API_DB_PASSWORD}
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=10)"]
+      interval: 30s
+      timeout: 12s
+      start_period: 10s
+      retries: 3
+  frontend:
+    image: uranium-frontend:${RELEASE_TAG:?Set RELEASE_TAG}
+    build:
+      context: ./frontend
+      target: production
+    restart: unless-stopped
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    depends_on:
+      api:
+        condition: service_healthy
+    logging: *logging
+  edge:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN:?Set APP_DOMAIN to your DNS hostname}
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [frontend]
+    logging: *logging
+
+volumes:
+  postgres_data:
+  caddy_data:
+  caddy_config:

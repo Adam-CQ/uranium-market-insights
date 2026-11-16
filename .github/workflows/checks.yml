@@ -1,0 +1,61 @@
+name: Checks
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: dashboard
+          POSTGRES_DB: uranium
+          POSTGRES_PASSWORD: ci-only-ephemeral
+        ports: [5432:5432]
+        options: --health-cmd "pg_isready -U dashboard -d uranium" --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      POSTGRES_PASSWORD: ci-only-ephemeral
+      RUN_POSTGRES_TESTS: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.12.2"
+      - run: uv sync --directory backend --locked
+      - run: uv run --directory backend --locked pytest
+      - run: uv run --directory backend --locked alembic upgrade head
+      - run: uv run --directory backend --locked alembic check
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - run: npm --prefix frontend ci
+      - run: npm --prefix frontend test
+      - run: npm --prefix frontend run build
+      - working-directory: frontend
+        run: npx playwright install --with-deps chromium
+      - run: npm --prefix frontend run test:e2e
+  containers:
+    runs-on: ubuntu-latest
+    env:
+      POSTGRES_PASSWORD: ci-only-ephemeral
+      RELEASE_TAG: ci
+      API_DB_PASSWORD: ci-only-reader
+      APP_DOMAIN: localhost
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose -f compose.production.yaml config --quiet
+      - run: docker compose -f compose.production.yaml build
+      - run: docker compose -f compose.production.yaml up -d db migrate api frontend
+      - run: |
+          for attempt in $(seq 1 30); do
+            if docker compose -f compose.production.yaml exec -T frontend wget -q -O - http://127.0.0.1:8080/ready; then exit 0; fi
+            sleep 2
+          done
+          exit 1
+      - if: always()
+        run: docker compose -f compose.production.yaml down

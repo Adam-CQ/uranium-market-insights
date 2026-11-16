@@ -1,0 +1,18 @@
+.env
+.cache/
+backups/
+release-*.tar.gz
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+node_modules/
+dist/
+
+# Local source artifacts and normalized extracts are never committed.
+data/raw/
+data/processed/
+
+# Browser test outputs
+frontend/test-results/
+frontend/playwright-report/
